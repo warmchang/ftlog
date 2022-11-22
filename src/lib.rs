@@ -222,6 +222,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::{stderr, Error as IoError, Write};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError, TrySendError};
@@ -364,6 +365,11 @@ impl Display for Message {
     }
 }
 
+struct DiscardState {
+    last: Instant,
+    count: usize,
+}
+
 /// ftlog global logger
 pub struct Logger {
     format: Box<dyn FtLogFormat>,
@@ -372,6 +378,7 @@ pub struct Logger {
     notification: Receiver<LoggerOutput>,
     worker_thread: Option<std::thread::JoinHandle<()>>,
     block: bool,
+    discard_state: Option<Mutex<DiscardState>>,
 }
 
 impl Logger {
@@ -425,10 +432,26 @@ impl Log for Logger {
                 .expect("logger queue closed when logging, this is a bug")
         } else {
             match self.queue.try_send(msg) {
+                Err(TrySendError::Full(_)) => {
+                    if self.discard_state.is_some() {
+                        let count = {
+                            let mut lock = self.discard_state.as_ref().unwrap().lock().unwrap();
+                            lock.count += 1;
+                            if lock.last.elapsed().as_secs() >= 5 {
+                                lock.last = Instant::now();
+                                Some(lock.count)
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(c) = count {
+                            eprintln!("Excessive log messages. Log omitted: {}", c);
+                        }
+                    }
+                }
                 Err(TrySendError::Disconnected(_)) => {
                     panic!("logger queue closed when logging, this is a bug")
                 }
-                // TODO warn discarded messages
                 _ => (),
             }
         }
@@ -462,6 +485,7 @@ impl Drop for Logger {
 struct BoundedChannelOption {
     size: usize,
     block: bool,
+    print: bool,
 }
 
 /// Ftlog builder
@@ -535,6 +559,7 @@ impl Builder {
             bounded_channel_option: Some(BoundedChannelOption {
                 size: 100_000,
                 block: false,
+                print: false,
             }),
         }
     }
@@ -551,12 +576,26 @@ impl Builder {
     /// When `block_when_full` is true, it will block current thread where
     /// log macro (e.g. `log::info`) is called until log thread is able to handle new message.
     /// Otherwises, excessive log messages will be discarded.
+    ///
+    /// By default, excessive log messages is discarded silently. To show how many log
+    /// messages have been dropped, see `Builder::print_omitted_count()`.
     #[inline]
     pub fn bounded(mut self, size: usize, block_when_full: bool) -> Builder {
         self.bounded_channel_option = Some(BoundedChannelOption {
             size,
             block: block_when_full,
+            print: false,
         });
+        self
+    }
+
+    /// whether to print the number of omitted logs if channel to log
+    /// thread is bounded, and set to discard excessive log messages
+    #[inline]
+    pub fn print_omitted_count(mut self, print: bool) -> Builder {
+        self.bounded_channel_option
+            .as_mut()
+            .map(|o| o.print = print);
         self
     }
 
@@ -787,17 +826,31 @@ impl Builder {
                     };
                 }
             })?;
+        let block = self
+            .bounded_channel_option
+            .as_ref()
+            .map(|x| x.block)
+            .unwrap_or(false);
+        let print = self
+            .bounded_channel_option
+            .as_ref()
+            .map(|x| x.print)
+            .unwrap_or(false);
         Ok(Logger {
             format: self.format,
             level: self.level,
             queue: sync_sender,
             notification: notification_receiver,
             worker_thread: Some(worker_thread),
-            block: self
-                .bounded_channel_option
-                .as_ref()
-                .map(|x| x.block)
-                .unwrap_or(false),
+            block,
+            discard_state: if block || !print {
+                None
+            } else {
+                Some(Mutex::new(DiscardState {
+                    last: Instant::now(),
+                    count: 0,
+                }))
+            },
         })
     }
 }
