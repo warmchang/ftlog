@@ -63,6 +63,9 @@ jobs:
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
 
+      - name: Clean semver check artifacts
+        run: rm -rf semver-checks
+
       - name: login
         env:
           SUPER_SECRET: ${{ secrets.CARGO_TOKEN }}
