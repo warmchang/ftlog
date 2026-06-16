@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.2.16](https://github.com/nonconvextech/ftlog/compare/v0.2.15...v0.2.16) (2026-06-16)
+
+
+### Bug Fixes
+
+* "limit", "random_drop", "drop" fails to work with `log` 0.4.30 and later ([646728d](https://github.com/nonconvextech/ftlog/commit/646728d6e0e8422f2741952005125c651898a428))
+
 ### [0.2.15](https://github.com/nonconvextech/ftlog/compare/v0.2.14...v0.2.15) (2025-03-28)
 
 
