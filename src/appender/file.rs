@@ -122,7 +122,7 @@ struct Rotate {
 }
 
 #[derive(TypedBuilder)]
-#[builder(build_method(vis = "", name = __build), builder_method(vis = ""))]
+#[builder(build_method(into = FileAppender), builder_method(vis = ""))]
 pub struct FileAppenderBuilder {
     #[builder(setter(transform = |x: impl AsRef<Path>| x.as_ref().to_path_buf()))]
     path: PathBuf,
@@ -134,16 +134,8 @@ pub struct FileAppenderBuilder {
     timezone: LogTimezone,
 }
 
-#[allow(dead_code, non_camel_case_types, missing_docs)]
-#[automatically_derived]
-impl<
-        __rotate: typed_builder::Optional<Option<Period>>,
-        __expire: typed_builder::Optional<Option<Duration>>,
-        __timezone: typed_builder::Optional<LogTimezone>,
-    > FileAppenderBuilderBuilder<((PathBuf,), __rotate, __expire, __timezone)>
-{
-    pub fn build(self) -> FileAppender {
-        let builder = self.__build();
+impl From<FileAppenderBuilder> for FileAppender {
+    fn from(builder: FileAppenderBuilder) -> Self {
         match (builder.rotate, builder.expire) {
             // rotate with auto clean
             (Some(period), Some(expire)) => {

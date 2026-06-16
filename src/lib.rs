@@ -288,6 +288,8 @@
 //! | `env_logger` <br/> output to file with `BufWriter`| with i32      | 278 ns/iter     | 565 ns/iter     |
 
 use arc_swap::ArcSwap;
+use foldhash::HashMap;
+use log::kv::{Source, Value, VisitSource};
 pub use log::{
     debug, error, info, log, log_enabled, logger, trace, warn, Level, LevelFilter, Record,
 };
@@ -303,7 +305,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender, TrySendError};
-use hashbrown::HashMap;
 use log::{kv::Key, set_boxed_logger, set_max_level, Log, Metadata, SetLoggerError};
 
 pub mod appender;
@@ -379,8 +380,8 @@ impl LogMsg {
         appenders: &mut HashMap<&'static str, Box<dyn Write + Send>>,
         root: &mut Box<dyn Write + Send>,
         root_level: LevelFilter,
-        missed_log: &mut HashMap<u64, i64, nohash_hasher::BuildNoHashHasher<u64>>,
-        last_log: &mut HashMap<u64, Time, nohash_hasher::BuildNoHashHasher<u64>>,
+        missed_log: &mut HashMap<u64, i64>,
+        last_log: &mut HashMap<u64, Time>,
         offset: Option<UtcOffset>,
         time_format: &time::format_description::OwnedFormatItem,
     ) {
@@ -610,6 +611,30 @@ impl Drop for LoggerGuard {
             .expect("logger notification closed, this is a bug");
     }
 }
+fn get_value_from_log_kv<'v>(source: &'v (impl Source + ?Sized), key: &str) -> Option<Value<'v>> {
+    struct Get<'k, 'v> {
+        key: Key<'k>,
+        found: Option<Value<'v>>,
+    }
+
+    impl<'k, 'kvs> VisitSource<'kvs> for Get<'k, 'kvs> {
+        fn visit_pair(&mut self, key: Key<'kvs>, value: Value<'kvs>) -> Result<(), log::kv::Error> {
+            if self.key.as_str() == key.as_str() {
+                self.found = Some(value);
+            }
+
+            Ok(())
+        }
+    }
+
+    let mut get = Get {
+        key: log::kv::Key::from_str(key),
+        found: None,
+    };
+
+    let _ = source.visit(&mut get);
+    get.found
+}
 /// ftlog global logger
 pub struct Logger {
     format: Box<dyn FtLogFormat>,
@@ -644,10 +669,8 @@ impl Log for Logger {
     fn log(&self, record: &Record) {
         #[cfg(feature = "random_drop")]
         {
-            let random_drop = record
-                .key_values()
-                .get(Key::from_str("random_drop"))
-                .or_else(|| record.key_values().get(Key::from_str("drop")))
+            let random_drop = get_value_from_log_kv(record.key_values(), "random_drop")
+                .or_else(|| get_value_from_log_kv(record.key_values(), "drop"))
                 .and_then(|x| x.to_f64())
                 .unwrap_or(1.) as f32;
             if random_drop < 1. && fastrand::f32() < random_drop {
@@ -655,9 +678,7 @@ impl Log for Logger {
             }
         }
 
-        let limit = record
-            .key_values()
-            .get(Key::from_str("limit"))
+        let limit = get_value_from_log_kv(record.key_values(), "limit")
             .and_then(|x| x.to_u64())
             .unwrap_or(0) as u32;
 
@@ -665,7 +686,7 @@ impl Log for Logger {
         let limit_key = if limit == 0 {
             0
         } else {
-            let mut b = hashbrown::hash_map::DefaultHashBuilder::default().build_hasher();
+            let mut b = foldhash::fast::FixedState::default().build_hasher();
             if let Some(p) = record.module_path() {
                 p.as_bytes().hash(&mut b);
             } else {
@@ -821,7 +842,7 @@ impl Builder {
             level: None,
             root_level: None,
             root: Box::new(stderr()) as Box<dyn Write + Send>,
-            appenders: HashMap::new(),
+            appenders: HashMap::default(),
             filters: Vec::new(),
             bounded_channel_option: Some(BoundedChannelOption {
                 size: 100_000,
